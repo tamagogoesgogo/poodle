@@ -28,15 +28,24 @@ def setup_db(db) -> None:
 
 def apply_config():
     db = DB.name
-    with open(BASE_PATH + f'/databases/{db}/config.json', 'r') as rf:
-        config = json.load(rf)
+    path = BASE_PATH + f'/databases/{db}/config.json'
+    try:
+        with open(path, 'r') as rf:
+            config = json.load(rf)
+    except (json.JSONDecodeError, ValueError):
+        # File is empty or corrupt (e.g. interrupted write). Reset to defaults.
+        config = {}
+        with open(path, 'w') as wf:
+            json.dump(config, wf)
     # Check for config keys
     template = {
         'NAME': f'{db}',
         'Q_CATEGORIES': [],
         'SHUFFLE': 1,
         'RANDOM_ARR_SIZE': 100,
-        'COLLECTIONS': ['questions', 'exams']
+        'COLLECTIONS': ['questions', 'exams'],
+        'FONT_SIZE': 13,
+        'THEME': 'cobalt'
     }
     for i, j in template.items():
         if i not in config.keys():
@@ -62,8 +71,61 @@ def apply_config():
     Q_CATEGORIES = config['Q_CATEGORIES']
     SHUFFLE = config['SHUFFLE']
     RANDOM_ARR_SIZE = config['RANDOM_ARR_SIZE']
+    FONT_SIZE = config['FONT_SIZE']
 
-    return Q_CATEGORIES, SHUFFLE, RANDOM_ARR_SIZE
+    return Q_CATEGORIES, SHUFFLE, RANDOM_ARR_SIZE, FONT_SIZE
+
+
+def read_setting(key: str, default=None):
+    """
+    Read a single setting from the current database's config.json. Reads the
+    file rather than the variables set at import, so a setting saved earlier in
+    this session is seen as well.
+
+    Arguments:
+    ----------
+    key (str):
+      Name of the setting, e.g. 'FONT_SIZE'.
+    default (any):
+      Returned if the file or the key is missing.
+
+    ----------------
+    Dependencies: json
+    """
+
+    path = BASE_PATH + f'/databases/{DB.name}/config.json'
+    try:
+        with open(path, 'r') as rf:
+            return json.load(rf).get(key, default)
+    except (OSError, json.JSONDecodeError, ValueError):
+        return default
+
+
+def save_setting(key: str, value) -> None:
+    """
+    Store a single setting in the current database's config.json, so a choice
+    made in the GUI is still there on the next launch.
+
+    Arguments:
+    ----------
+    key (str):
+      Name of the setting, e.g. 'FONT_SIZE'.
+    value (any):
+      Value to store. Must be JSON-serializable.
+
+    ----------------
+    Dependencies: json
+    """
+
+    path = BASE_PATH + f'/databases/{DB.name}/config.json'
+    try:
+        with open(path, 'r') as rf:
+            stored = json.load(rf)
+    except (OSError, json.JSONDecodeError, ValueError):
+        stored = {}
+    stored[key] = value
+    with open(path, 'w') as wf:
+        json.dump(stored, wf, indent=2)
 
 
 ## Global variables
@@ -78,8 +140,9 @@ DB = eval(f'CLIENT.{sys.argv[-1]}')
 QUESTIONS = DB.questions
 EXAMS = DB.exams
 
+
 setup_db(DB.name)
-Q_CATEGORIES, SHUFFLE, RANDOM_ARR_SIZE = apply_config()
+Q_CATEGORIES, SHUFFLE, RANDOM_ARR_SIZE, FONT_SIZE = apply_config()
 
 # Expected value types for question keys
 KEY_TYPES = {

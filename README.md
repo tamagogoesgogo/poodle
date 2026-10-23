@@ -29,21 +29,30 @@ and suggestions from Marian Krawietz at University of Potsdam.
 Edition](https://www.mongodb.com/docs/manual/administration/install-on-linux/#std-label-install-mdb-community-edition-linux)
 in accordance with your operating system. It is utilized as the backend for
 Poodle's database.
-* Download this repository and move it to your desired location.
+* Install Git (`sudo apt install git`) and download this repository's
+  `stable` branch to your desired location:
+  `git clone -b stable https://github.com/tamagogoesgogo/poodle.git`
 * Make launch.sh executable with `chmod +x /PATH/TO/launch.sh` .
 * OPTIONAL: Create a symbolic link for more convenience with `sudo ln -s
   /PATH/TO/launch.sh /usr/local/bin/poodle` .
 * You can now execute `launch.sh` directly or with `poodle -l <DB NAME>` if you
   followed the previous step.
 
-## Documentation (Work in progress)
+## Updates
+
+A copy installed from the `stable` branch as above keeps itself up to date:
+every time Poodle is started with `launch.sh`, it fetches the newest `stable`
+version from GitHub first. Your databases (`databases/`, `mongo/`) are never
+touched by this. Without a network connection, or if Poodle's own files were
+changed on your computer, the installed version starts as it is.
+
+## Documentation
 
 A full documentation of Poodle can be found
 [here](https://ananaft.github.io/poodle-docs/).
 
-<!---
+
 ## Known issues (Work in progress)
 
 
 ## Planned features (Work in progress)
--->

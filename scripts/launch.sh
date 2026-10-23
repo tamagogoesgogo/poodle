@@ -62,9 +62,7 @@ install_system_dependencies () {
 
     # Ubuntu/Debian/Linux Mint
     local -a debian_packages=(
-	'python3-pip' 'python3-venv' 'libgirepository1.0-dev' 'gcc'
-	'libcairo2-dev' 'pkg-config' 'python3-dev' 'gir1.2-gtk-4.0'
-	'gir1.2-webkit2-4.0'
+	'python3-pip' 'python3-venv' 'libxcb-cursor0'
     )
     # Install missing system packages
     cat /etc/os-release | grep -Eq '^ID=([Dd]ebian|[Uu]buntu|[Ll]inux\s?[Mm]int)' &&
@@ -78,37 +76,55 @@ install_system_dependencies () {
 	[[ -n "$debian_packages" ]] &&
 	yes | sudo apt -qqq install "${debian_packages[@]}"
 
-    # Manjaro/Arch
-    local -a arch_packages=(
-	'cairo' 'pkgconf' 'gobject-introspection' 'gtk4'
-    )
-    # Install missing system packages
-    cat /etc/os-release | grep -Eq '^ID=([Aa]rch|[Mm]anjaro)' &&
-	{ for i in "${arch_packages[@]}"; do
-	      pacman -Q | grep -Eq "^$i[\s/]" && already_installed+=( "$i" )
-	  done;
-	  for i in "${already_installed[@]}"; do
-	      arch_packages=( "${arch_packages[@]/$i}" )
-	  done; } &&
-	[[ -n "$arch_packages" ]] &&
-	yes | sudo pacman -S --needed "${arch_packages[@]}"
+    # Manjaro/Arch — no system packages required beyond base python
+    if cat /etc/os-release | grep -Eq '^ID=([Aa]rch|[Mm]anjaro)'; then
+	pacman -Q python-pip &>/dev/null ||
+	    yes | sudo pacman -S --needed python-pip
+    fi
 
-    # Fedora
-    local -a fedora_packages=(
-	'cairo' 'cairo-devel' 'python3-devel' 'gobject-introspection-devel'
-	'cairo-gobject-devel'
-    )
-    # Install missing system packages
-    cat /etc/os-release | grep -Eq '^ID=fedora' &&
-	{ for i in "${fedora_packages[@]}"; do
-	      dnf list --installed 2>/dev/null | grep -Eq "^$i[\s/]" &&
-		  already_installed+=( "$i" )
-	  done;
-	  for i in "${already_installed[@]}"; do
-	      fedora_packages=( "${fedora_packages[@]/$i}" )
-	  done; } &&
-	[[ -n "$fedora_packages" ]] &&
-	sudo dnf install -yq "${fedora_packages[@]}"
+    # Fedora — no system packages required beyond base python
+    if cat /etc/os-release | grep -Eq '^ID=fedora'; then
+	rpm -q python3-pip &>/dev/null ||
+	    sudo dnf install -yq python3-pip
+    fi
+}
+
+# Bring Poodle up to date from GitHub before it starts. Only a copy installed
+# with `git clone -b stable` updates itself: on any other branch, such as the
+# main branch Poodle is developed on, this does nothing. It never overwrites
+# anything: no network, local changes to Poodle's files, or a history that has
+# gone its own way all mean the installed version simply starts as it is.
+update_poodle () {
+    [[ -n "$POODLE_JUST_UPDATED" ]] && return 0
+    [[ -d .git ]] || return 0
+    command -v git &>/dev/null || return 0
+    [[ "$(git rev-parse --abbrev-ref HEAD 2>/dev/null)" == 'stable' ]] || return 0
+
+    echo 'Checking for a new Poodle version...'
+    if ! timeout 20 git fetch --quiet origin stable 2>/dev/null; then
+	echo -e 'GitHub not reachable; starting the installed version.\n'
+	return 0
+    fi
+    # Nothing newer: the same version, or this copy is already ahead of it
+    if git merge-base --is-ancestor FETCH_HEAD HEAD; then
+	echo -e 'Poodle is up to date.\n'
+	return 0
+    fi
+
+    if [[ -n "$(git status --porcelain --untracked-files=no)" ]]; then
+	echo 'A new Poodle version is available, but Poodle'"'"'s own files were changed'
+	echo -e 'on this computer, so it was not installed. Please ask for help.\n'
+	return 0
+    fi
+    if ! git merge --ff-only --quiet FETCH_HEAD 2>/dev/null; then
+	echo -e 'A new Poodle version could not be installed. Please ask for help.\n'
+	return 0
+    fi
+    echo -e "Poodle updated to the version of $(git log -1 --format=%cd --date=short).\n"
+
+    # This script may itself have changed: start the new one instead
+    export POODLE_JUST_UPDATED=1
+    exec bash scripts/launch.sh "$@"
 }
 
 connect_local () {
@@ -193,6 +209,8 @@ main () {
     # Set base directory
     cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
     cd ".."
+
+    update_poodle "$@"
     # Create databases directory if necessary
     if ! ls | grep -q '^databases$'; then
 	mkdir databases
@@ -229,10 +247,11 @@ main () {
 	      source venv/bin/activate &&
 	      echo -e 'Done.\n'; }
 
-    # Install python packages
-    pip3 install --no-python-version-warning -qqr requirements.txt &
-    pid=$!
-    loading "$pid" 'Checking/installing python packages'
+    # Install python packages (shown on first run; fast on subsequent runs)
+    echo 'Checking/installing python packages...'
+    pip3 install --no-python-version-warning -r requirements.txt
+    echo 'Done.'
+    echo
 
     # Start Poodle
     python3 -i poodle/launch.py "$username" "$password" "$connection_string" "$db"

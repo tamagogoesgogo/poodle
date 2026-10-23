@@ -30,19 +30,12 @@ def list_functions():
 
 
 if __name__ == "__main__":
-    # Backup routine
-    if os.listdir(BASE_PATH + f'/databases/{DB.name}/backup/'):
-        last_backup = sorted(os.listdir(BASE_PATH + f'/databases/{DB.name}/backup/'))[-1]
-        with open(BASE_PATH + f'/databases/{DB.name}/backup/' + last_backup + '/timestamp', 'r') as rf:
-            last_backup = float(rf.read())
-        # Automatic backup if last backup is older than one week
-        if time.time() - last_backup > 604800:
-            print('Last backup is older than 7 days. Generating new one.\n')
-            backup()
-            print('\n\n')
-    else:
-        print('No backups found.')
     # Report status
     print(f'Current database: {DB.name}\n')
     for c in DB.list_collection_names():
         print('Documents in collection %s: %d' % (c, DB.get_collection(c).count_documents({})))
+
+    # Set by the Restart button: open the GUI again without being asked
+    if os.environ.pop('POODLE_OPEN_GUI', None):
+        print()
+        qt_overview()

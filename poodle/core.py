@@ -6,6 +6,10 @@ import time
 import os
 import platform
 import subprocess
+import shutil
+import contextlib
+import tempfile
+import zipfile
 import re
 import pyperclip
 from lxml import etree as ET
@@ -13,7 +17,124 @@ import base64
 import numpy as np
 import copy
 from pprint import pprint
+from pymongo import MongoClient
 
+# for the scrolled mongodb text
+import tkinter as tk
+from tkinter import scrolledtext
+
+# for the export/import commands
+
+import subprocess
+
+### kara functions ###
+
+def export_question(db_from, question_name, directory="q_in_out"):
+    """
+    Exports a question from a MongoDB database and saves it as a JSON file.
+    
+    Arguments:
+        db_from (str): Name of the source database.
+        question_name (str): Name of the question to export.
+        directory (str): Directory to save the exported JSON file (default is 'q_in_out').
+    """
+    # Ensure the directory exists
+    os.makedirs(directory, exist_ok=True)
+    
+    # Define the output file path
+    file_path = os.path.join(directory, f"{question_name}.json")
+    
+    # Mongoexport command
+    export_command = [
+        "mongoexport",
+        "--uri", "mongodb://localhost:27017",
+        "--db", db_from,
+        "--collection", "questions",
+        "--query", f'{{"name": "{question_name}"}}',
+        "--out", file_path
+    ]
+    
+    try:
+        # Run mongoexport
+        print(f"Exporting question '{question_name}' from '{db_from}' to '{file_path}'...")
+        subprocess.run(export_command, check=True)
+        print(f"Export successful. File saved at '{file_path}'.")
+        return file_path  # Return the file path for reference
+    except subprocess.CalledProcessError as e:
+        print(f"An error occurred during export: {e}")
+        return None
+
+
+def import_question(db_to, question_name, directory="q_in_out"):
+    """
+    Imports a question JSON file into a MongoDB database.
+    
+    Arguments:
+        db_to (str): Name of the target database.
+        question_name (str): Name of the question to import.
+        directory (str): Directory where the JSON file is stored (default is 'q_in_out').
+    """
+    # Define the input file path
+    file_path = os.path.join(directory, f"{question_name}.json")
+    
+    if not os.path.exists(file_path):
+        print(f"Error: File '{file_path}' does not exist. Make sure to export the question first.")
+        return
+    
+    # Mongoimport command
+    import_command = [
+        "mongoimport",
+        "--uri", "mongodb://localhost:27017",
+        "--db", db_to,
+        "--collection", "questions",
+        "--file", file_path
+    ]
+    
+    try:
+        # Run mongoimport
+        print(f"Importing question '{question_name}' from '{file_path}' into '{db_to}'...")
+        subprocess.run(import_command, check=True)
+        print("Import successful.")
+    except subprocess.CalledProcessError as e:
+        print(f"An error occurred during import: {e}")
+
+
+
+def mongo_show():
+    """
+    Open a window displaying MongoDB control instructions.
+
+    This window provides commands to check and start the MongoDB service.
+    """
+
+    # Create a new window
+    window = tk.Tk()
+
+    # create the text
+    text = ("Vor jedem poodle-start:\n\n sudo systemctl status mongod\n\n"
+            "Falls mongodb nicht aktiv:\n\n sudo systemctl start mongod")
+
+    # Set the window title
+    window.title("Mongo Control")
+
+    # Set the window size
+    window.geometry("400x200")
+
+    # Create a scrollable text area
+    text_area = scrolledtext.ScrolledText(window, wrap=tk.WORD, width=60, height=20)
+
+    # Insert the provided text into the text area
+    text_area.insert(tk.INSERT, text)
+
+    # Make the text area read-only
+    text_area.config(state=tk.DISABLED)
+
+    # Pack the text area into the window
+    text_area.pack(pady=10, padx=10)
+
+    # Run the window loop
+    window.mainloop()
+    
 
 def backup(db=DB.name) -> None:
     """
@@ -36,6 +157,34 @@ def backup(db=DB.name) -> None:
             ["mongodump", f"--db={db}",
              f"--out={BASE_PATH}/databases/{db}/backup/{backup_time}"]
         )
+        
+### kara ###
+
+def delete_db(db_name):
+    """
+    Connect to the local MongoDB instance and delete the specified database.
+
+    Arguments:
+    db_name (str): Name of the database to delete.
+    """
+    try:
+        # Connect to MongoDB (assuming it's running locally on the default port)
+        client = MongoClient("mongodb://localhost:27017/")
+
+        # List databases before deletion
+        print("Databases before deletion:", client.list_database_names())
+
+        # Delete the specified database
+        client.drop_database(db_name)
+
+        # Confirmation message
+        print(f"Database '{db_name}' has been deleted.")
+
+        # List databases after deletion to confirm
+        print("Databases after deletion:", client.list_database_names())
+
+    except Exception as e:
+        print(f"An error occurred: {e}")
 
 
 def restore(path=None, db=DB.name) -> None:
@@ -55,6 +204,393 @@ def restore(path=None, db=DB.name) -> None:
     # Restore backup files to localhost
     else:
         subprocess.run(["mongorestore", f"--nsInclude={db}.*", f"{path}"])
+
+
+### Database update from a received database folder ###
+
+# Folders of databases/<db>/ that belong to the database's content and are
+# replaced by an update. backup/ is merged instead, config.json partly.
+UPDATE_FOLDERS = ['exams', 'img', 'random_vars']
+# Settings in config.json that describe the database itself. FONT_SIZE and
+# THEME are each user's own choice and are never taken from an update.
+UPDATE_SETTINGS = ['Q_CATEGORIES', 'SHUFFLE', 'RANDOM_ARR_SIZE', 'COLLECTIONS']
+
+
+def _dump_db_name(folder):
+    """Name of the database dumped in a backup folder, or None."""
+    for name in sorted(os.listdir(folder)):
+        sub = os.path.join(folder, name)
+        if os.path.isdir(sub) and any(f.endswith('.bson') for f in os.listdir(sub)):
+            return name
+    return None
+
+
+_BACKUP_NAME = re.compile(r'^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}$')
+
+
+def _dumps_in(folder):
+    """
+    Backup folders of a database folder as {name: path}, oldest first. They
+    are found in its backup/ folder or, as in the copies sent from the server,
+    directly inside it. Backups without a dump in them are left out.
+    """
+    found = {}
+    for parent in (folder, os.path.join(folder, 'backup')):
+        try:
+            names = os.listdir(parent)
+        except OSError:
+            continue
+        for name in names:
+            # Only folders named the way backup() names them. Looking into
+            # img/ or random_vars/ as well would check every file in them,
+            # which on a network drive takes half a second per file.
+            if not _BACKUP_NAME.match(name):
+                continue
+            path = os.path.join(parent, name)
+            if os.path.isdir(path) and _dump_db_name(path):
+                found[name] = path
+    # Backup folders are named by time, so the newest sorts last
+    return dict(sorted(found.items()))
+
+
+@contextlib.contextmanager
+def _unpacked(source):
+    """A received .zip unpacked into a temporary folder; a folder as it is."""
+    if os.path.isfile(source) and zipfile.is_zipfile(source):
+        with tempfile.TemporaryDirectory() as tmp:
+            with zipfile.ZipFile(source) as zf:
+                zf.extractall(tmp)
+            yield tmp
+    else:
+        yield source
+
+
+def _locate_update(source):
+    """(database folder or None, backup folder, dumped database name)"""
+    while True:
+        if any(f.endswith('.bson') for f in os.listdir(source)):
+            return None, os.path.dirname(source), os.path.basename(source)
+        dumps = _dumps_in(source)
+        if dumps:
+            dump = list(dumps.values())[-1]
+            return source, dump, _dump_db_name(dump)
+        if _dump_db_name(source):
+            return None, source, _dump_db_name(source)
+        # A folder that only wraps another one, as an unpacked .zip does
+        entries = [e for e in os.listdir(source)
+                   if not e.startswith('.') and e != '__MACOSX']
+        if len(entries) == 1 and os.path.isdir(os.path.join(source, entries[0])):
+            source = os.path.join(source, entries[0])
+        else:
+            raise ValueError('No database backup found in it.')
+
+
+def _checked_source(source, db):
+    source = os.path.abspath(source)
+    if not os.path.exists(source):
+        raise ValueError(f'{source} does not exist.')
+    local = os.path.abspath(f'{BASE_PATH}/databases/{db}')
+    if os.path.exists(local) and os.path.samefile(source, local):
+        raise ValueError('This is the current database\'s own folder. '
+                         'Choose the folder you received instead.')
+    return source
+
+
+def _copy_tree(src, dst, copied, progress):
+    """
+    Copy a folder file by file. One at a time on purpose: through a network
+    drive mounted by the file manager (gvfs), copying in parallel measured
+    three times slower. Python's __pycache__ is left behind.
+    """
+    os.makedirs(dst, exist_ok=True)
+    for entry in os.scandir(src):
+        if entry.name == '__pycache__':
+            continue
+        target = os.path.join(dst, entry.name)
+        if entry.is_dir():
+            _copy_tree(entry.path, target, copied, progress)
+        else:
+            shutil.copyfile(entry.path, target)
+            copied[0] += 1
+            if progress:
+                progress(copied[0])
+
+
+def fetch_update(source, dest, db=DB.name, progress=None) -> str:
+    """
+    Copy what update_database() uses from a received folder or .zip into the
+    local folder dest, and return where the copy is, to update from there.
+
+    On a network drive every file takes about half a second however small it
+    is, so only the parts an update uses are copied: the newest backup,
+    exams/, img/, random_vars/ and config.json. A .zip is one file and comes
+    through in seconds; that is the fast way to hand out updates on BoxUP.
+
+    Arguments:
+    ----------
+    progress (callable):
+      Called with the number of files copied so far, after each one.
+
+    ----------------------------------------
+    Dependencies: config, os, shutil, zipfile
+    """
+    source = _checked_source(source, db)
+    copied = [0]
+
+    if os.path.isfile(source):
+        if not zipfile.is_zipfile(source):
+            raise ValueError(f'{source} is neither a folder nor a .zip file.')
+        local_zip = os.path.join(dest, 'update.zip')
+        shutil.copyfile(source, local_zip)
+        if progress:
+            progress(1)
+        with zipfile.ZipFile(local_zip) as zf:
+            zf.extractall(os.path.join(dest, 'unzipped'))
+        os.remove(local_zip)
+        return os.path.join(dest, 'unzipped')
+
+    folder, dump, dump_db = _locate_update(source)
+    if folder is None:
+        target = os.path.join(dest, os.path.basename(dump))
+        _copy_tree(dump, target, copied, progress)
+        return target
+
+    target = os.path.join(dest, os.path.basename(folder))
+    _copy_tree(dump, os.path.join(target, os.path.basename(dump)), copied, progress)
+    for sub in UPDATE_FOLDERS:
+        if os.path.isdir(os.path.join(folder, sub)):
+            _copy_tree(os.path.join(folder, sub), os.path.join(target, sub),
+                       copied, progress)
+    if os.path.isfile(os.path.join(folder, 'config.json')):
+        shutil.copyfile(os.path.join(folder, 'config.json'),
+                        os.path.join(target, 'config.json'))
+    return target
+
+
+def inspect_update(source, db=DB.name) -> dict:
+    """
+    Find the newest database dump inside a folder or .zip received as an
+    update and describe it, without changing anything.
+
+    Arguments:
+    ----------
+    source (str):
+      The .zip or folder received, holding a database folder like
+      databases/<db>/ (the usual case), or a single backup folder
+      (databases/<db>/backup/<time>) or the dumped database inside one.
+
+    Returns a dict with:
+      'folder': the database folder, or None if only a backup was given
+      'dump': the backup folder that will be restored
+      'dump_db': the name of the database inside that dump
+      'taken': when the dump was made, as 'YYYY-MM-DD HH:MM'
+      'counts': {collection: (documents in update, documents now)}
+      'files': {folder in UPDATE_FOLDERS: number of entries in it in the
+                update, or None if the update does not have that folder}
+      'newer_local': name of a local backup newer than the update, or None
+    Paths are only valid while source is a folder, not a .zip.
+
+    --------------------------------
+    Dependencies: config, os, bson
+    """
+    import bson
+
+    source = _checked_source(source, db)
+    local = os.path.abspath(f'{BASE_PATH}/databases/{db}')
+
+    with _unpacked(source) as unpacked:
+        if not os.path.isdir(unpacked):
+            raise ValueError(f'{source} is neither a folder nor a .zip file.')
+        folder, dump, dump_db = _locate_update(unpacked)
+
+        name = os.path.basename(dump)
+        try:
+            taken = time.strftime(
+                '%Y-%m-%d %H:%M', time.strptime(name, '%Y-%m-%d_%H-%M-%S')
+            )
+        except ValueError:
+            taken = name
+
+        counts = {}
+        for f in sorted(os.listdir(os.path.join(dump, dump_db))):
+            if f.endswith('.bson'):
+                collection = f[:-len('.bson')]
+                with open(os.path.join(dump, dump_db, f), 'rb') as rf:
+                    new = sum(1 for _ in bson.decode_file_iter(rf))
+                counts[collection] = (new, DB[collection].count_documents({}))
+
+        files = {}
+        for sub in UPDATE_FOLDERS:
+            path = os.path.join(folder, sub) if folder else None
+            files[sub] = (len([f for f in os.listdir(path) if f != '__pycache__'])
+                          if path and os.path.isdir(path) else None)
+
+    newer = [b for b in _dumps_in(local) if b > name] if os.path.isdir(local) else []
+
+    return {'folder': folder, 'dump': dump, 'dump_db': dump_db,
+            'taken': taken, 'counts': counts, 'files': files,
+            'newer_local': newer[-1] if newer else None}
+
+
+def _mongo_tool(tool, *args):
+    """Run mongodump/mongorestore against the current connection."""
+    if 'localhost' not in CONNECTION:
+        login = [f"--host={CONNECTION[CONNECTION.find('@')+1:]}",
+                 f"--username={CREDENTIALS[0]}", f"--password={CREDENTIALS[1]}",
+                 "--authenticationDatabase=admin"]
+    else:
+        login = [f'--uri={CONNECTION}']
+    result = subprocess.run([tool, *login, *args], capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(f'{tool} failed:\n{result.stderr.strip()}')
+
+
+def _replace_folder(src, dst):
+    if os.path.isdir(dst):
+        shutil.rmtree(dst)
+    shutil.copytree(src, dst)
+
+
+def update_database(source, db=DB.name, progress=None) -> str:
+    """
+    Replace the database with a newer version received as a folder or .zip,
+    e.g. a copy of databases/<db>/ from the university's server. The update wins:
+    afterwards the database is an exact copy of the newest backup inside the
+    folder, and exams/, img/ and random_vars/ match the folder's.
+
+    The current state is saved first to databases/<db>/before_update/<time>/
+    and can be brought back with undo_last_update(). If restoring fails, that
+    is done automatically.
+
+    This replaces running remove_exam() and restore() by hand: restore() alone
+    skips every document that already exists, so changed questions were never
+    updated.
+
+    Arguments:
+    ----------
+    source (str):
+      The received folder or .zip; see inspect_update() for what it may be.
+    progress (callable):
+      See fetch_update().
+
+    Returns a short report of what was updated.
+
+    ----------------------------------------
+    Dependencies: config, os, shutil, subprocess
+    """
+    if 'localhost' not in CONNECTION:
+        raise RuntimeError('Updating from a folder only works on a local '
+                           'database; this would overwrite the server.')
+
+    # Everything is read from a local copy: a network drive is slow to read
+    # twice, and a connection lost halfway must not leave a half update.
+    with tempfile.TemporaryDirectory() as tmp:
+        return _update_database(fetch_update(source, tmp, db, progress), db)
+
+
+def _update_database(source, db):
+    info = inspect_update(source, db)
+    local = f'{BASE_PATH}/databases/{db}'
+
+    # 1. Save the current state
+    saved = f'{local}/before_update/{time.strftime("%Y-%m-%d_%H-%M-%S")}'
+    os.makedirs(f'{saved}/files')
+    _mongo_tool('mongodump', f'--db={db}', f'--out={saved}')
+    for name in UPDATE_FOLDERS + ['config.json']:
+        path = f'{local}/{name}'
+        if os.path.isdir(path):
+            shutil.copytree(path, f'{saved}/files/{name}')
+        elif os.path.isfile(path):
+            shutil.copy2(path, f'{saved}/files/{name}')
+
+    # 2. Replace the database. --drop empties each collection first, so
+    #    documents that already exist are updated instead of skipped.
+    rename = []
+    if info['dump_db'] != db:
+        rename = [f'--nsFrom={info["dump_db"]}.*', f'--nsTo={db}.*']
+    try:
+        _mongo_tool('mongorestore', '--drop', f'--nsInclude={info["dump_db"]}.*',
+                    *rename, info['dump'])
+    except RuntimeError as e:
+        undo_last_update(db)
+        raise RuntimeError(f'{e}\n\nThe database was left as it was.') from None
+
+    report = [f'Database updated to the version of {info["taken"]}.']
+    for collection, (new, old) in info['counts'].items():
+        report.append(f'{collection}: {old} → {new}')
+
+    # 3. Files belonging to the database
+    folder = info['folder']
+    if folder is None:
+        report.append('Only a backup was given, so exams/, img/ and '
+                      'random_vars/ were not changed.')
+        return '\n'.join(report)
+
+    for name in UPDATE_FOLDERS:
+        if os.path.isdir(f'{folder}/{name}'):
+            _replace_folder(f'{folder}/{name}', f'{local}/{name}')
+
+    # The backup restored, so the local history has it as well
+    for name, path in _dumps_in(folder).items():
+        if not os.path.exists(f'{local}/backup/{name}'):
+            shutil.copytree(path, f'{local}/backup/{name}')
+
+    configs = []
+    for path in (f'{folder}/config.json', f'{local}/config.json'):
+        try:
+            with open(path, 'r') as rf:
+                configs.append(json.load(rf))
+        except (OSError, json.JSONDecodeError, ValueError):
+            configs.append({})
+    received, current = configs
+    changed = [k for k in UPDATE_SETTINGS
+               if k in received and received[k] != current.get(k)]
+    if changed:
+        current.update({k: received[k] for k in changed})
+        with open(f'{local}/config.json', 'w') as wf:
+            json.dump(current, wf, indent=2)
+        report.append(f'Settings changed ({", ".join(changed)}); '
+                      'restart Poodle for them to take effect.')
+
+    return '\n'.join(report)
+
+
+def last_update_backup(db=DB.name):
+    """Path of the state saved by the last update_database(), or None."""
+    path = f'{BASE_PATH}/databases/{db}/before_update'
+    saved = sorted(os.listdir(path)) if os.path.isdir(path) else []
+    return f'{path}/{saved[-1]}' if saved else None
+
+
+def undo_last_update(db=DB.name) -> str:
+    """
+    Bring back the state saved by the last update_database(). The saved copy
+    is removed afterwards, so calling this again goes one update further back.
+
+    ----------------------------------------
+    Dependencies: config, os, shutil, subprocess
+    """
+    saved = last_update_backup(db)
+    if saved is None:
+        raise RuntimeError('There is no update to undo.')
+    local = f'{BASE_PATH}/databases/{db}'
+
+    if os.path.isdir(f'{saved}/{db}'):
+        _mongo_tool('mongorestore', '--drop', f'--nsInclude={db}.*', saved)
+    else:
+        # The database was empty before the update
+        for collection in DB.list_collection_names():
+            DB.drop_collection(collection)
+
+    for name in UPDATE_FOLDERS:
+        if os.path.isdir(f'{saved}/files/{name}'):
+            _replace_folder(f'{saved}/files/{name}', f'{local}/{name}')
+    if os.path.isfile(f'{saved}/files/config.json'):
+        shutil.copy2(f'{saved}/files/config.json', f'{local}/config.json')
+
+    shutil.rmtree(saved)
+    name = os.path.basename(saved)
+    return f'Restored the state from before the update of {name}.'
 
 
 def yesno(prompt=''):
@@ -359,38 +895,164 @@ class MoodleQuestion(ET.ElementBase):
         self.idnumber = ET.SubElement(self, 'idnumber')
         self.idnumber.text = ''
 
+    # A column with no header of its own is there to label the rows rather
+    # than to carry figures, so it takes this share of a normal column's width.
+    LABEL_COLUMN_WIDTH = 0.5
+
+    @staticmethod
+    def _narrow_columns(header):
+        """Indexes of the columns that carry no header of their own."""
+        narrow, index = set(), 0
+        for item in header:
+            names = item[1:] if isinstance(item, list) else [item]
+            for name in names:
+                if not str('' if name is None else name).strip():
+                    narrow.add(index)
+                index += 1
+        return narrow
+
+    @staticmethod
+    def _column_widths(header):
+        """Return width_of(index, span=1) giving each column's CSS width.
+
+        Columns are equal except for those whose header is empty, which a
+        spanning row header writes into and which stay narrow.
+        """
+        narrow = MoodleQuestion._narrow_columns(header)
+        count = sum(len(h) - 1 if isinstance(h, list) else 1 for h in header)
+        weights = [
+            MoodleQuestion.LABEL_COLUMN_WIDTH if index in narrow else 1.0
+            for index in range(count)
+        ]
+        total = sum(weights) or 1.0
+
+        def width_of(index, span=1):
+            share = sum(weights[index:index + span]) or 1.0
+            return f'{100 * share / total:.4f}%'
+
+        return width_of
+
+    @staticmethod
+    def _row_cells(row, start=0):
+        """Walk a row as (value, colspan, index), honouring merged cells.
+
+        A cell written as None is merged into the cell on its left, which is
+        how a figure like a Fallzahl covers both columns of its group.
+        """
+        cells = []
+        col = start
+        while col < len(row):
+            span = 1
+            while col + span < len(row) and row[col + span] is None:
+                span += 1
+            value = row[col]
+            cells.append(('' if value is None else value, span, col))
+            col += span
+        return cells
+
+    @staticmethod
+    def _table_to_html(data, row_headers=False):
+        border = 'border-width: 1px; border-style: solid;'
+        widths = MoodleQuestion._column_widths(data[0])
+        col_w = widths(0)
+
+        root = ET.Element('table', attrib={
+            'style': 'table-layout: fixed; width: 100%;'
+        })
+        thead = ET.SubElement(root, 'thead')
+        has_split = any(isinstance(h, list) for h in data[0])
+        tr1 = ET.SubElement(thead, 'tr')
+        sub_headers = []
+        flat_index = 0
+        for h in data[0]:
+            if isinstance(h, list):
+                n_sub = len(h) - 1
+                th = ET.SubElement(tr1, 'th', attrib={
+                    'scope': 'col',
+                    'colspan': str(n_sub),
+                    'style': (f'{border} text-align: center;'
+                              f' font-weight: bold;'
+                              f' width: {widths(flat_index, n_sub)};'),
+                })
+                th.text = str(h[0])
+                sub_headers.extend((sub, flat_index + offset)
+                                   for offset, sub in enumerate(h[1:]))
+                flat_index += n_sub
+            else:
+                style = (f'{border} text-align: center;'
+                         f' font-weight: bold; width: {widths(flat_index)};')
+                attrib = {'scope': 'col', 'style': style}
+                if has_split:
+                    attrib['rowspan'] = '2'
+                    attrib['style'] += ' vertical-align: middle;'
+                th = ET.SubElement(tr1, 'th', attrib=attrib)
+                th.text = str(h)
+                flat_index += 1
+        if has_split:
+            tr2 = ET.SubElement(thead, 'tr')
+            for sh, index in sub_headers:
+                th = ET.SubElement(tr2, 'th', attrib={
+                    'scope': 'col',
+                    'style': (f'{border} text-align: center;'
+                              f' font-weight: bold; width: {widths(index)};'),
+                })
+                th.text = str(sh)
+        tbody = ET.SubElement(root, 'tbody')
+        for item in data[1:]:
+            if isinstance(item, dict) and 'group' in item:
+                label = item['group']
+                sub_rows = item['rows']
+                n_sub = len(sub_rows)
+                for si, sub_row in enumerate(sub_rows):
+                    tr = ET.SubElement(tbody, 'tr')
+                    if si == 0:
+                        cell = ET.SubElement(tr, 'th', attrib={
+                            'scope': 'rowgroup',
+                            'rowspan': str(n_sub),
+                            'style': (f'{border} text-align: center;'
+                                      f' font-weight: bold; width: {col_w};'
+                                      f' vertical-align: middle;'),
+                        })  # col_w is column 0, where the header sits
+                        cell.text = str(label)
+                    # column 0 is occupied by the rowspan cell
+                    for value, span, index in MoodleQuestion._row_cells(sub_row, 1):
+                        attrib = {'style': (f'{border} text-align: center;'
+                                            f' width: {widths(index, span)};')}
+                        if span > 1:
+                            attrib['colspan'] = str(span)
+                        cell = ET.SubElement(tr, 'td', attrib=attrib)
+                        cell.text = str(value)
+            else:
+                tr = ET.SubElement(tbody, 'tr')
+                for value, span, index in MoodleQuestion._row_cells(item):
+                    width = widths(index, span)
+                    if row_headers and index == 0:
+                        attrib = {'scope': 'row',
+                                  'style': (f'{border} text-align: center;'
+                                            f' font-weight: bold; width: {width};')}
+                        tag = 'th'
+                    else:
+                        attrib = {'style': (f'{border} text-align: center;'
+                                            f' width: {width};')}
+                        tag = 'td'
+                    if span > 1:
+                        attrib['colspan'] = str(span)
+                    cell = ET.SubElement(tr, tag, attrib=attrib)
+                    cell.text = str(value)
+        return root
+
     @staticmethod
     def make_tables(q, el):
         for m in re.finditer(r'(?<=\[\[)tbl\d+(?=\]\])', el.text):
-            tbl = q['tables'][m.group()]
+            raw = q['tables'][m.group()]
+            if isinstance(raw, dict):
+                data = raw['data']
+                row_headers = raw.get('row_headers', False)
+            else:
+                data = raw
+                row_headers = False
 
-            root = ET.Element('table')
-            # Table head
-            thead = ET.SubElement(root, 'thead')
-            tr = ET.SubElement(thead, 'tr')
-            for i in tbl[0]:
-                th = ET.SubElement(
-                    tr, 'th',
-                    attrib={
-                        'scope': 'col',
-                        'style': 'border-width: 1px; border-style: solid;'
-                    }
-                )
-                th.text = str(i)
-            # Table body
-            tbody = ET.SubElement(root, 'tbody')
-            for i in tbl[1:]:
-                tr = ET.SubElement(tbody, 'tr')
-                for j in i:
-                    td = ET.SubElement(
-                        tr, 'td',
-                        attrib={
-                            'style': 'border-width: 1px; border-style: solid;'
-                        }
-                    )
-                    td.text = str(j)
-
-            # Replace in question text
+            root = MoodleQuestion._table_to_html(data, row_headers)
             repl = ET.tostring(root, pretty_print=True).decode('utf-8')
             el.text = ET.CDATA(re.sub(r'\[\[%s\]\]' % (m.group()), repl, el.text))
 
@@ -712,7 +1374,7 @@ class CalculatedQuestion(MoodleQuestion):
         pattern = r'(?<=\.)[0-9e+-]*'
         
         def get_len(n):
-            if np.int0(n) == n:
+            if np.int64(n) == n:
                 return 0
             elif not re.search(r'e', str(n)):
                 return len(re.search(pattern, str(n)).group())
@@ -837,7 +1499,7 @@ class CalculatedQuestion(MoodleQuestion):
                 subchild.text = str(n+1)
                 subchild = ET.SubElement(child, 'value')
                 if decimals == 0:
-                    subchild.text = str(np.int0(i))
+                    subchild.text = str(np.int64(i))
                 else:
                     subchild.text = str(i)
 
@@ -994,26 +1656,57 @@ def create_xml(exam, filename='import.xml', mode='terminal', questions=None):
     elif mode == 'gui':
         questionlist, info = questionlist_auto(questions)
 
-    # Append XML
+
     for q in questionlist:
         q_dict = QUESTIONS.find_one({'name': q})
         try:
+            # Print question details before processing
+            print(f'Processing question: {q}')
+            print(f'Question details (q_dict): {q_dict}')
+        
+            # Try to create the question element
             q_el = eval((
                 f'{q_dict["moodle_type"].capitalize()}'
                 f'Question(attrib={{"type": "{q_dict["moodle_type"]}"}})'
-                        ))
+            ))
+            print(f'Created question element: {q_el}')
+
+            # Set defaults and additional attributes
             q_el.set_defaults(q_dict)
+            print('Set defaults successfully.')
+        
             q_el.set_additional(q_dict)
+            print('Set additional attributes successfully.')
+
+            # Append question element to the XML root
             root.append(q_el)
-        except:
-            print(f'Question {q} has errors!')
+            print(f'Successfully appended question {q} to XML.')
+        
+        except KeyError as ke:
+            # If a key is missing in q_dict
+            print(f'KeyError with question {q}: {ke}')
+            print(f'Missing key in question dict: {q_dict}')
+        
+        except AttributeError as ae:
+            # If q_el or q_dict has missing attributes or methods
+            print(f'AttributeError with question {q}: {ae}')
+            print(f'Question dict (q_dict): {q_dict}')
+            print(f'Possible missing method or attribute in q_el or q_dict.')
+        
+        except Exception as e:
+            # Catch any other exceptions and print a detailed message
+            print(f'Question {q} has errors! {e}')
+            print(f'Error occurred while processing question: {q}')
+            print(f'Question dict (q_dict): {q_dict}')
+            print(f'Failed question element (q_el if created): {locals().get("q_el")}')
+            
 
     with open(f'{BASE_PATH}/databases/{DB.name}/exams/{exam}/{filename}', 'w') as wf:
         wf.write('<?xml version="1.0" encoding="UTF-8"?>\n')
         wf.write((f'<!-- Estimated time: {info[0]}, '
                   f'average difficulty: {info[1]}, '
                   f'maximum possible points: {info[2]} -->\n')
-                 )
+                )
         wf.write(ET.tostring(root, pretty_print=True).decode('utf-8'))
 
     print('Import file successfully created.')

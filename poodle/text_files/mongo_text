@@ -1,0 +1,45 @@
+## 1.) Mongo DB Control
+
+<br>
+
+### How to start, status, and stop mongodb
+
+***
+
+<br>
+
+Installation: https://www.mongodb.com/docs/manual/tutorial/install-mongodb-on-ubuntu/#install-mongodb-community-edition
+
+<br>
+
+- 1. Start MongoDB
+
+<br>
+
+```sudo systemctl start mongod```
+
+**IMPORTANT**: This command also seems to fix the unsupported terminal error in PyCharm.
+
+<br>
+
+- 2. Verify that MongoDB has started successfully
+
+<br>
+
+```sudo systemctl status mongod```
+
+<br>
+
+- 3. Stop MongoDB
+
+<br>
+
+```sudo systemctl stop mongod```
+
+<br>
+
+- 4. Restart MongoDB
+
+<br>
+
+```sudo systemctl restart mongod```

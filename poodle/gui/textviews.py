@@ -1,42 +1,19 @@
-# Gtk modules
-import gi
-gi.require_version('Gtk', '3.0')
-from gi.repository import Gtk
-# Other modules
+from PySide6.QtWidgets import QPlainTextEdit
 import json
 
 
-class RawText(Gtk.TextView):
-    """
-    Dependencies: Gtk, json
-    """
+class RawText(QPlainTextEdit):
 
     def __init__(self, content: dict):
-
-        super().__init__(wrap_mode=Gtk.WrapMode(3))
-
+        super().__init__()
+        self.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
         self.content = content
-
-        self.textbuffer = self.get_buffer()
-        self.textbuffer.set_text(json.dumps(self.content,
-                                 ensure_ascii=False, indent=4))
+        self.setPlainText(json.dumps(self.content, ensure_ascii=False, indent=4))
 
     def update_content(self) -> dict:
-
-        self.content = json.loads(
-            self.textbuffer.get_text(
-            self.textbuffer.get_start_iter(),
-            self.textbuffer.get_end_iter(),
-            include_hidden_chars=True
-            )
-        )
-
+        self.content = json.loads(self.toPlainText())
         return self.content
 
     def overwrite(self, content: dict):
-
         self.content = content
-
-        self.textbuffer.set_text(
-            json.dumps(content, ensure_ascii=False, indent=4)
-        )
+        self.setPlainText(json.dumps(content, ensure_ascii=False, indent=4))

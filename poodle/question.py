@@ -4,6 +4,7 @@ from core import *
 import ast
 import re
 import pymongo
+import runpy
 import time
 import pandas as pd
 import numpy as np
@@ -383,7 +384,7 @@ def create_template(file_path: str, file_type: str) -> None:
     ------------------------------
     Dependencies: re, pandas, json
     """
-
+        
     def fill_fields(moodle_type: dict) -> dict:
 
         all_fields = moodle_type
@@ -768,3 +769,51 @@ def remove_question(question, archive=False):
         print('Question successfully removed.')
     else:
         print(f"Question '{question}' not in collection. Nothing to remove.")
+
+
+def dataset_items(question_name: str, variables: list) -> list:
+    """
+    Run a question's variable creation file and return the values it produced,
+    formatted exactly as create_exam() writes them into Moodle's dataset items.
+
+    Each element of the returned list is one dataset item: a dictionary mapping
+    every variable name to the value Moodle would substitute for {name} in that
+    item. Used by the GUI to preview a calculated question with real numbers.
+
+    The file is executed fresh on every call, so edits made in the variable
+    editor show up in the next preview.
+
+    Arguments:
+    ----------
+    question_name (str):
+      Name of the question whose rv_<name>.py file will be run.
+    variables (list):
+      Names of the variables to read out of that file.
+
+    -------------------------------
+    Dependencies: config, core, numpy, runpy
+    """
+
+    path = f'{BASE_PATH}/databases/{DB.name}/random_vars/rv_{question_name}.py'
+    namespace = runpy.run_path(path)
+
+    missing = [v for v in variables if v not in namespace]
+    if missing:
+        raise KeyError(
+            f"not defined in rv_{question_name}.py: {', '.join(missing)}"
+        )
+
+    columns = {}
+    for v in variables:
+        values = np.atleast_1d(namespace[v])
+        decimals = CalculatedQuestion.count_decimals(values)
+        columns[v] = [
+            str(np.int64(x)) if decimals == 0 else str(x) for x in values
+        ]
+
+    item_count = min(len(c) for c in columns.values())
+
+    return [
+        {v: columns[v][i] for v in columns}
+        for i in range(item_count)
+    ]

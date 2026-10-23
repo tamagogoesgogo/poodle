@@ -1,0 +1,357 @@
+/* ── Poodle stylesheet ─────────────────────────────────────────────────────────
+   Colours are written as @name tokens, filled in by gui.theming from the
+   chosen palette; font sizes are scaled there too. Loaded only through
+   theming.load(); the raw file is not valid QSS on its own.
+   ──────────────────────────────────────────────────────────────────────────── */
+
+/* Base */
+* {
+    font-family: "Inter", "Noto Sans", "Segoe UI", sans-serif;
+    font-size: 13px;
+    outline: none;
+}
+
+QWidget {
+    background-color: @base;
+    color: @text;
+    border: none;
+}
+
+/* ── Action bar ──────────────────────────────────────────────────────────────*/
+
+QWidget#ActionBar {
+    background-color: @mantle;
+    border-top: 1px solid @surface;
+}
+
+/* ── Buttons ─────────────────────────────────────────────────────────────── */
+
+QPushButton {
+    background-color: @surface;
+    color: @text;
+    border: 1px solid @surface_alt;
+    border-radius: 5px;
+    padding: 4px 12px;
+    min-height: 22px;
+}
+
+QPushButton:hover {
+    background-color: @surface_alt;
+    border-color: @overlay;
+}
+
+QPushButton:pressed {
+    background-color: @mantle;
+}
+
+QPushButton:checked {
+    background-color: @accent;
+    color: @base;
+    border-color: @accent;
+    font-weight: bold;
+}
+
+QPushButton:disabled {
+    background-color: @base;
+    color: @surface_alt;
+    border-color: @surface;
+}
+
+/* ── Text inputs ─────────────────────────────────────────────────────────── */
+
+QLineEdit, QPlainTextEdit, QTextEdit {
+    background-color: @mantle;
+    color: @text;
+    border: 1px solid @surface_alt;
+    border-radius: 4px;
+    padding: 4px 8px;
+    selection-background-color: @surface_hi;
+    selection-color: @text;
+}
+
+QLineEdit:focus, QPlainTextEdit:focus, QTextEdit:focus {
+    border-color: @accent;
+}
+
+QLineEdit[readOnly="true"] {
+    background-color: @base;
+    color: @overlay;
+    border-color: @surface;
+}
+
+/* ── Labels ──────────────────────────────────────────────────────────────── */
+
+QLabel {
+    color: @subtext;
+    background: transparent;
+}
+
+/* ── Tables ──────────────────────────────────────────────────────────────── */
+
+QTableView {
+    background-color: @mantle;
+    alternate-background-color: @base;
+    color: @text;
+    gridline-color: @surface;
+    border: 1px solid @surface;
+    border-radius: 4px;
+    selection-background-color: @surface_alt;
+    selection-color: @text;
+}
+
+QTableView::item {
+    padding: 4px 6px;
+}
+
+QTableView::item:selected {
+    background-color: @surface_alt;
+}
+
+QTableView::item:hover {
+    background-color: @hover;
+}
+
+QHeaderView {
+    background-color: @base;
+    border: none;
+}
+
+QHeaderView::section {
+    background-color: @raised;
+    color: @accent_soft;
+    border: none;
+    border-right: 1px solid @surface;
+    border-bottom: 1px solid @surface;
+    padding: 6px 8px;
+    font-weight: bold;
+}
+
+QHeaderView::section:last {
+    border-right: none;
+}
+
+/* ── Tabs ────────────────────────────────────────────────────────────────── */
+
+QTabWidget::pane {
+    border: 1px solid @surface;
+    background-color: @base;
+}
+
+QTabBar {
+    background-color: @mantle;
+}
+
+QTabBar::tab {
+    background-color: @mantle;
+    color: @overlay;
+    border: none;
+    border-bottom: 2px solid transparent;
+    padding: 8px 18px;
+    margin-right: 2px;
+}
+
+QTabBar::tab:selected {
+    background-color: @base;
+    color: @accent;
+    border-bottom: 2px solid @accent;
+}
+
+QTabBar::tab:hover:!selected {
+    background-color: @raised;
+    color: @text;
+}
+
+/* ── Scrollbars ──────────────────────────────────────────────────────────── */
+
+QScrollBar:vertical {
+    background-color: @mantle;
+    width: 9px;
+    margin: 0;
+}
+
+QScrollBar::handle:vertical {
+    background-color: @surface_alt;
+    border-radius: 4px;
+    min-height: 24px;
+}
+
+QScrollBar::handle:vertical:hover {
+    background-color: @overlay;
+}
+
+QScrollBar::add-line:vertical,
+QScrollBar::sub-line:vertical {
+    height: 0;
+}
+
+QScrollBar:horizontal {
+    background-color: @mantle;
+    height: 9px;
+    margin: 0;
+}
+
+QScrollBar::handle:horizontal {
+    background-color: @surface_alt;
+    border-radius: 4px;
+    min-width: 24px;
+}
+
+QScrollBar::handle:horizontal:hover {
+    background-color: @overlay;
+}
+
+QScrollBar::add-line:horizontal,
+QScrollBar::sub-line:horizontal {
+    width: 0;
+}
+
+/* ── Splitter ────────────────────────────────────────────────────────────── */
+
+QSplitter::handle {
+    background-color: @surface;
+}
+
+QSplitter::handle:horizontal {
+    width: 2px;
+}
+
+QSplitter::handle:vertical {
+    height: 2px;
+}
+
+QSplitter::handle:hover {
+    background-color: @accent;
+}
+
+/* ── ComboBox ────────────────────────────────────────────────────────────── */
+
+QComboBox {
+    background-color: @surface;
+    color: @text;
+    border: 1px solid @surface_alt;
+    border-radius: 4px;
+    padding: 4px 8px;
+    min-height: 22px;
+}
+
+QComboBox:hover {
+    border-color: @overlay;
+}
+
+QComboBox:focus {
+    border-color: @accent;
+}
+
+QComboBox::drop-down {
+    border: none;
+    width: 22px;
+}
+
+QComboBox::down-arrow {
+    image: none;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-top: 5px solid @overlay;
+    width: 0;
+    height: 0;
+}
+
+QComboBox QAbstractItemView {
+    background-color: @surface;
+    color: @text;
+    border: 1px solid @surface_alt;
+    selection-background-color: @surface_alt;
+    selection-color: @text;
+    outline: none;
+}
+
+/* ── SpinBox ─────────────────────────────────────────────────────────────── */
+
+QSpinBox {
+    background-color: @surface;
+    color: @text;
+    border: 1px solid @surface_alt;
+    border-radius: 4px;
+    padding: 4px 8px;
+    min-height: 22px;
+}
+
+QSpinBox:focus {
+    border-color: @accent;
+}
+
+QSpinBox::up-button, QSpinBox::down-button {
+    background-color: @surface_alt;
+    border: none;
+    width: 18px;
+}
+
+QSpinBox::up-button:hover, QSpinBox::down-button:hover {
+    background-color: @surface_hi;
+}
+
+/* ── Dialogs ─────────────────────────────────────────────────────────────── */
+
+QDialog {
+    background-color: @base;
+}
+
+QMessageBox {
+    background-color: @base;
+}
+
+QDialogButtonBox QPushButton {
+    min-width: 80px;
+}
+
+/* ── Scroll areas ────────────────────────────────────────────────────────── */
+
+QScrollArea {
+    border: none;
+    background-color: transparent;
+}
+
+QScrollArea > QWidget > QWidget {
+    background-color: transparent;
+}
+
+/* ── Drop zone (exam evaluation) ─────────────────────────────────────────── */
+
+QLabel#DropZone {
+    border: 2px dashed @surface_alt;
+    border-radius: 6px;
+    background-color: @mantle;
+    color: @subtext;
+    padding: 16px;
+}
+
+QLabel#DropZone[dragActive="true"] {
+    border-color: @accent;
+    background-color: @raised;
+    color: @text;
+}
+
+QLabel#DropStatus {
+    color: @subtext;
+    padding: 2px 4px;
+}
+
+/* ── Menus ───────────────────────────────────────────────────────────────── */
+
+QMenu {
+    background-color: @mantle;
+    color: @text;
+    border: 1px solid @surface_alt;
+    border-radius: 4px;
+    padding: 4px;
+}
+
+QMenu::item {
+    padding: 5px 18px 5px 12px;
+    border-radius: 3px;
+}
+
+QMenu::item:selected {
+    background-color: @surface;
+    color: @text;
+}

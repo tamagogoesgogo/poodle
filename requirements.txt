@@ -1,8 +1,13 @@
-numpy
-pandas
-Pillow
-pymongo
-pyperclip
-lxml
-pycairo
-PyGObject
+# Versions are bounded on purpose. The lower bound is what Poodle has been
+# tested with; the upper bound keeps out the next major version, which is where
+# libraries make breaking changes (pandas 3 kept the overview from opening).
+# The ranges stay open in between so that newer Python versions still find
+# ready-made packages. To move to a new major version, test it, then raise the
+# bound here.
+numpy>=2.2,<3
+pandas>=2.2.3,<3
+Pillow>=11,<13
+pymongo>=4.10,<5
+lxml>=5.3,<7
+pyperclip>=1.9,<2
+PySide6>=6.11.1,<7

@@ -1,262 +1,190 @@
-# Gtk modules
-import gi
-gi.require_version('Gtk', '3.0')
-from gi.repository import Gtk
-# Poodle modules
+from PySide6.QtWidgets import QTabWidget, QScrollArea
+from PySide6.QtGui import QTextCharFormat, QColor
 import gui.treeviews
 import gui.panels
 import gui.grids
 import gui.textviews
-# Other modules
+import gui.dialogs
 import json
 import re
 
 
-class MainNotebook(Gtk.Notebook):
-    """
-    Dependencies: Gtk, gui.treeviews, gui.panels
-    """
+class MainNotebook(QTabWidget):
 
-    def __init__(self, parent: Gtk.Window):
-
+    def __init__(self, parent):
         super().__init__()
         self.parent_window = parent
+
+        # Questions tab
+        self.question_table = gui.treeviews.QuestionTreeview(self.parent_window)
+        q_scroll = QScrollArea()
+        q_scroll.setWidget(self.question_table)
+        q_scroll.setWidgetResizable(True)
+        self.addTab(q_scroll, 'Questions')
+
+        # Exams tab
+        self.exam_table = gui.treeviews.ExamTreeview(self.parent_window)
+        e_scroll = QScrollArea()
+        e_scroll.setWidget(self.exam_table)
+        e_scroll.setWidgetResizable(True)
+        self.addTab(e_scroll, 'Exams')
+
+        self.currentChanged.connect(self._on_tab_changed)
+
+    def _on_tab_changed(self, index: int):
+        # Switch the control panel shown in MainWindow
+        if index == 0:
+            self.parent_window.control = self.parent_window.question_control
+        else:
+            self.parent_window.control = self.parent_window.exam_control
+        self.parent_window.stacked_control.setCurrentIndex(index)
+
+
+class _SyncNotebook(QTabWidget):
+    """Base for the two-tab editors: a form grid on tab 0, raw JSON on tab 1.
+
+    Every switch copies the content of the tab being left into the tab being
+    entered. The direction is determined solely by the destination index, so
+    the very first switch syncs like any other one.
+    """
+
+    def __init__(self, parent):
+        super().__init__()
+        self.parent_window = parent
+        self._last_idx = 0
+        self._in_switch = False
+
+    @property
+    def _grid(self):
+        return self.widget(0).widget()
+
+    @property
+    def _raw(self):
+        return self.widget(1).widget()
+
+    def current_content_widget(self):
+        """Return the actual content widget of the currently visible tab."""
+        return self.currentWidget().widget()
+
+    def _abort(self, prev_idx: int, secondary_text: str) -> None:
+        """Undo the tab switch and tell the user why it was refused."""
+        self._in_switch = True
+        self.setCurrentIndex(prev_idx)
+        self._in_switch = False
+        gui.dialogs.OKDialog(
+            self.parent_window,
+            'Aborted switching page due to following error:',
+            secondary_text
+        )._run()
+
+    def _highlight_json_error(self, e) -> None:
+        """Colour the line the JSON parser choked on red."""
+        if re.match("Expecting ',' delimiter", e.args[0]):
+            error_chars = e.doc.splitlines()[e.lineno - 2]
+        else:
+            error_chars = e.doc.splitlines()[e.lineno - 1]
+        cursor = self._raw.document().find(error_chars)
+        if not cursor.isNull():
+            fmt = QTextCharFormat()
+            fmt.setForeground(QColor('red'))
+            cursor.mergeCharFormat(fmt)
+
+    def _on_tab_changed(self, new_idx: int) -> None:
+        if self._in_switch:
+            return
+        prev_idx = self._last_idx
+        if prev_idx == new_idx:
+            return
+
+        if new_idx == 0:  # arriving at form tab: read from Raw
+            try:
+                new_content = self._raw.update_content()
+            except json.JSONDecodeError as e:
+                self._abort(prev_idx, e.args[0])
+                self._highlight_json_error(e)
+                return
+            try:
+                self._grid.overwrite(new_content)
+            except Exception as e:
+                self._abort(prev_idx, f'{type(e).__name__}: {e}')
+                return
+        else:  # arriving at Raw tab: read from form tab
+            try:
+                new_content = self._grid.update_content()
+            except Exception as e:
+                self._abort(prev_idx, f'{type(e).__name__}: {e}')
+                return
+            new_content.pop('_id', None)
+            self._raw.overwrite(new_content)
+
+        self._last_idx = new_idx
+
+
+class QuestionNotebook(_SyncNotebook):
+
+    def __init__(self, parent, question_content: dict):
+        super().__init__(parent)
 
         # Question tab
-        self.question_window = Gtk.ScrolledWindow()
-        self.question_window.set_vexpand(True)
-        self.question_table = gui.treeviews.QuestionTreeview(self.parent_window)
-        self.question_window.add(self.question_table)
-        self.append_page(self.question_window, Gtk.Label(label='Questions'))
-
-        # Exam tab
-        self.exam_window = Gtk.ScrolledWindow()
-        self.exam_window.set_vexpand(True)
-        self.exam_table = gui.treeviews.ExamTreeview(self.parent_window)
-        self.exam_window.add(self.exam_table)
-        self.append_page(self.exam_window, Gtk.Label(label='Exams'))
-
-        self.connect('switch-page', self.on_switch_page)
-
-    # Switch between ControlPanels in MainWindow when page is switched
-    def on_switch_page(self, notebook, page, page_num) -> None:
-        # Remove old panel from main window grid
-        old_panel = [
-            x for x in self.parent_window.grid.get_children()
-            if isinstance(x, Gtk.ActionBar)
-        ][0]
-        self.parent_window.grid.remove(old_panel)
-        # Replace with updated panel class
-        if self.get_current_page() % 2 == 1:
-            self.parent_window.control = gui.panels.MainQuestionControlPanel(self.parent_window)
-        else:
-            self.parent_window.control = gui.panels.MainExamControlPanel(self.parent_window)
-        self.parent_window.grid.attach_next_to(self.parent_window.control,
-                                               self, Gtk.PositionType.BOTTOM,
-                                               1, 1)
-        self.parent_window.show_all()
-
-
-class QuestionNotebook(Gtk.Notebook):
-    """
-    Dependencies: Gtk, gui.grids, gui.textviews, gui.dialogs, json, re
-    """
-
-    def __init__(self, parent: Gtk.Window, question_content: dict):
-
-        super().__init__()
-        self.parent_window = parent
-
-        # Normal tab
-        self.question_window = Gtk.ScrolledWindow()
-        self.question_window.set_vexpand(True)
-
+        q_scroll = QScrollArea()
+        q_scroll.setWidgetResizable(True)
         match question_content['moodle_type']:
             case 'multichoice':
                 self.question_grid = gui.grids.MultiChoiceQuestionGrid(
-                    self.parent_window, question_content
-                    )
+                    self.parent_window, question_content)
             case 'numerical':
                 self.question_grid = gui.grids.NumericalQuestionGrid(
-                    self.parent_window, question_content
-                    )
+                    self.parent_window, question_content)
             case 'shortanswer':
                 self.question_grid = gui.grids.ShortanswerQuestionGrid(
-                    self.parent_window, question_content
-                    )
+                    self.parent_window, question_content)
             case 'essay':
                 self.question_grid = gui.grids.EssayQuestionGrid(
-                    self.parent_window, question_content
-                    )
+                    self.parent_window, question_content)
             case 'matching':
                 self.question_grid = gui.grids.MatchingQuestionGrid(
-                    self.parent_window, question_content
-                    )
+                    self.parent_window, question_content)
             case 'gapselect':
                 self.question_grid = gui.grids.GapselectQuestionGrid(
-                    self.parent_window, question_content
-                    )
+                    self.parent_window, question_content)
             case 'ddimageortext':
                 self.question_grid = gui.grids.DDImageOrTextQuestionGrid(
-                    self.parent_window, question_content
-                    )
+                    self.parent_window, question_content)
             case 'calculated':
                 self.question_grid = gui.grids.CalculatedQuestionGrid(
-                    self.parent_window, question_content
-                    )
+                    self.parent_window, question_content)
             case _:
-                raise Exception
-
-        self.question_window.add(self.question_grid)
-        self.append_page(self.question_window, Gtk.Label(label='Question'))
+                raise ValueError(f"Unknown moodle_type: {question_content['moodle_type']}")
+        q_scroll.setWidget(self.question_grid)
+        self.addTab(q_scroll, 'Question')
 
         # Raw tab
-        self.raw_window = Gtk.ScrolledWindow()
-        self.raw_window.set_vexpand(True)
+        r_scroll = QScrollArea()
+        r_scroll.setWidgetResizable(True)
         self.raw_page = gui.textviews.RawText(question_content)
-        self.raw_window.add(self.raw_page)
-        self.append_page(self.raw_window, Gtk.Label(label='Raw'))
+        r_scroll.setWidget(self.raw_page)
+        self.addTab(r_scroll, 'Raw')
 
-        self.connect('switch-page', self.on_switch_page)
-        self.switch_counter = 0
-
-    # Passing data between pages on switch
-    def on_switch_page(self, notebook, page, page_num):
-
-        page_titles = ['Question', 'Raw']
-
-        if self.switch_counter > 0:
-
-            # Update content of previous page and pass to new page
-            # Gtk.ScrolledWindow inserts Gtk.ViewPort as parent of Gtk.Grid
-            if page_titles[self.switch_counter % 2] == 'Question':
-                previous_page = self.get_nth_page(
-                    int(not page_num)
-                ).get_children()[0]
-                new_page = page.get_children()[0].get_children()[0]
-                # If Raw is edited in a way that invalidates JSON
-                # warn user and abort page switch
-                try:
-                    new_content = previous_page.update_content()
-                except json.decoder.JSONDecodeError as e:
-                    error_msg = e.args[0]
-                    dialog = gui.dialogs.OKDialog(
-                        self.parent_window,
-                        'Aborted switching page due to following error:',
-                        error_msg
-                    )
-                    dialog._run()
-                    self.stop_emission_by_name('switch-page')
-                    # Mark line that caused error
-                    if re.match("Expecting ',' delimiter", error_msg):
-                        error_chars = e.doc.splitlines()[e.lineno - 2]
-                    else:
-                        error_chars = e.doc.splitlines()[e.lineno - 1]
-                    textbuffer = previous_page.get_buffer()
-                    search_match = textbuffer.get_start_iter().forward_search(
-                        error_chars, 0, None
-                    )
-                    textbuffer.delete(search_match[0], search_match[1])
-                    textbuffer.insert_markup(
-                        search_match[0],
-                        f'<span color="red">{error_chars}</span>',
-                        -1
-                    )
-                    return 1
-                new_page.overwrite(new_content)
-            else:
-                previous_page = self.get_nth_page(
-                    int(not page_num)
-                ).get_children()[0].get_children()[0]
-                new_page = page.get_children()[0]
-                new_content = previous_page.update_content()
-                # Remove ObjectID if necessary
-                if '_id' in new_content.keys():
-                    new_content.pop('_id')
-                new_page.overwrite(new_content)
-
-        self.switch_counter += 1
+        self.currentChanged.connect(self._on_tab_changed)
 
 
-class ExamNotebook(Gtk.Notebook):
-    """
-    Dependencies: Gtk, gui.grids, gui.textviews, gui.dialogs, json, re
-    """
+class ExamNotebook(_SyncNotebook):
 
-    def __init__(self, parent: Gtk.Window, exam_content: dict):
+    def __init__(self, parent, exam_content: dict):
+        super().__init__(parent)
 
-        super().__init__()
-        self.parent_window = parent
-
-        # Normal tab
-        self.exam_window = Gtk.ScrolledWindow()
-        self.exam_window.set_vexpand(True)
-
+        # Exam tab
+        e_scroll = QScrollArea()
+        e_scroll.setWidgetResizable(True)
         self.exam_grid = gui.grids.ExamGrid(self.parent_window, exam_content)
-
-        self.exam_window.add(self.exam_grid)
-        self.append_page(self.exam_window, Gtk.Label(label='Exam'))
+        e_scroll.setWidget(self.exam_grid)
+        self.addTab(e_scroll, 'Exam')
 
         # Raw tab
-        self.raw_window = Gtk.ScrolledWindow()
-        self.raw_window.set_vexpand(True)
+        r_scroll = QScrollArea()
+        r_scroll.setWidgetResizable(True)
         self.raw_page = gui.textviews.RawText(exam_content)
-        self.raw_window.add(self.raw_page)
-        self.append_page(self.raw_window, Gtk.Label(label='Raw'))
+        r_scroll.setWidget(self.raw_page)
+        self.addTab(r_scroll, 'Raw')
 
-        self.connect('switch-page', self.on_switch_page)
-        self.switch_counter = 0
-
-    # Passing data between pages on switch
-    def on_switch_page(self, notebook, page, page_num):
-
-        page_titles = ['Exam', 'Raw']
-
-        if self.switch_counter > 0:
-
-            # Update content of previous page and pass to new page
-            # Gtk.ScrolledWindow inserts Gtk.ViewPort as parent of Gtk.Grid
-            if page_titles[self.switch_counter % 2] == 'Exam':
-                previous_page = self.get_nth_page(
-                    int(not page_num)
-                ).get_children()[0]
-                new_page = page.get_children()[0].get_children()[0]
-                # If Raw is edited in a way that invalidates JSON
-                # warn user and abort page switch
-                try:
-                    new_content = previous_page.update_content()
-                except json.decoder.JSONDecodeError as e:
-                    error_msg = e.args[0]
-                    dialog = gui.dialogs.OKDialog(
-                        self.parent_window,
-                        'Aborted switching page due to following error:',
-                        error_msg
-                    )
-                    dialog._run()
-                    self.stop_emission_by_name('switch-page')
-                    # Mark line that caused error
-                    if re.match("Expecting ',' delimiter", error_msg):
-                        error_chars = e.doc.splitlines()[e.lineno - 2]
-                    else:
-                        error_chars = e.doc.splitlines()[e.lineno - 1]
-                    textbuffer = previous_page.get_buffer()
-                    search_match = textbuffer.get_start_iter().forward_search(
-                        error_chars, 0, None
-                    )
-                    textbuffer.delete(search_match[0], search_match[1])
-                    textbuffer.insert_markup(
-                        search_match[0],
-                        f'<span color="red">{error_chars}</span>',
-                        -1
-                    )
-                    return 1
-                new_page.overwrite(new_content)
-            else:
-                previous_page = self.get_nth_page(
-                    int(not page_num)
-                ).get_children()[0].get_children()[0]
-                new_page = page.get_children()[0]
-                new_content = previous_page.update_content()
-                new_page.overwrite(new_content)
-
-        self.switch_counter += 1
+        self.currentChanged.connect(self._on_tab_changed)

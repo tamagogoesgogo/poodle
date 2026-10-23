@@ -136,3 +136,6 @@ databases/
 
 # MongoDB
 mongo/
+
+# Editor settings
+.idea/

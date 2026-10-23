@@ -5,10 +5,6 @@ from pprint import pprint
 import re
 import numpy as np
 import pandas as pd
-import threading
-import gi
-gi.require_version('Gtk', '3.0')
-from gi.repository import Gtk
 
 
 def view(collection, search=None, field='name'):
@@ -72,19 +68,67 @@ def view(collection, search=None, field='name'):
             pprint(q)
 
 
-def gtk_overview() -> None:
+def qt_overview() -> None:
     """
-    Dependencies: threading, gui.windows, Gtk
+    Launch the main GUI window (blocks until the window is closed).
+
+    Dependencies: PySide6, gui.windows
     """
+    import sys
+    import os
+    from PySide6.QtWidgets import QApplication, QStyleFactory
+    import gui.theming
 
-    def run_overview() -> None:
-        win = gui.windows.MainWindow()
-        win.show_all()
-        Gtk.main()
+    # Prevent the GTK/system platform theme from overriding QSS
+    os.environ['QT_QPA_PLATFORMTHEME'] = ''
+    os.environ['QT_STYLE_OVERRIDE'] = 'Fusion'
 
-    thread = threading.Thread(target=run_overview)
-    thread.daemon = True
-    thread.start()
+    global _APP
+    # Held module-level: a QApplication in a local would be destroyed when this
+    # function returns, while its windows are still alive.
+    _APP = QApplication.instance() or QApplication(sys.argv)
+    app = _APP
+    app.setStyle(QStyleFactory.create('Fusion'))
+    print('[poodle] Qt style set to Fusion')
+
+    # Loads style.qss and applies the text size stored for this database
+    gui.theming.load()
+    print(f'[poodle] {gui.theming.palette_name()} theme, '
+          f'text size {gui.theming.size()}px (Ctrl+± to change)')
+
+    win = gui.windows.MainWindow()
+    win.show()
+    app.exec()
+
+    # Leave nothing open: a surviving window would keep the next qt_overview()
+    # from ever returning to the prompt.
+    for window in list(gui.windows._OPEN_WINDOWS):
+        window.close()
+
+    if gui.windows.RESTART_INTO:
+        _restart_poodle(gui.windows.RESTART_INTO)
+
+
+def _restart_poodle(db: str) -> None:
+    """
+    Replace this Python process with a fresh one running launch.py with the
+    same arguments, but database db, so every module is read anew. The
+    terminal, the MongoDB daemon and launch.sh carry on as they were;
+    POODLE_OPEN_GUI tells the new process to open the GUI straight away.
+    """
+    import sys
+    import os
+
+    print(f'\n[poodle] Restarting into {db}…\n')
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os.environ['POODLE_OPEN_GUI'] = '1'
+    launch = os.path.abspath(sys.argv[0])
+    os.execv(sys.executable, [sys.executable, '-i', launch, *sys.argv[1:-1], db])
+
+
+# Backward-compatible alias
+gtk_overview = qt_overview
 
 
 def export_overview(path=BASE_PATH, filename='overview', candidates=None):

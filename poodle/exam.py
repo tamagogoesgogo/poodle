@@ -8,6 +8,92 @@ import numpy as np
 import json
 
 
+def _load_moodle_json(path):
+    """
+    Load a Moodle-exported JSON file, handling two known Moodle export defects:
+
+    1. Moodle sometimes appends an HTML error page directly after the JSON
+       array's last bracket (e.g. '...}]<!DOCTYPE html>...'), and in doing
+       so also omits the outer array's closing ']'.
+
+    2. Multi-line student answers can contain literal control characters
+       inside JSON strings, which violates the JSON spec.
+    """
+    def _strip_html_trailer(raw):
+        for marker in ('<!DOCTYPE', '<html', '<!doctype'):
+            idx = raw.find(marker)
+            if idx != -1:
+                truncated = raw[:idx].rstrip()
+                # Re-balance any brackets that the truncation cut off.
+                depth = truncated.count('[') - truncated.count(']')
+                truncated += ']' * max(depth, 0)
+                return truncated
+        return raw
+
+    def _sanitize(raw):
+        out = []
+        inside = False
+        i = 0
+        while i < len(raw):
+            ch = raw[i]
+            if inside:
+                if ch == '\\':
+                    out.append(ch)
+                    i += 1
+                    if i < len(raw):
+                        out.append(raw[i])
+                elif ch == '"':
+                    inside = False
+                    out.append(ch)
+                elif ord(ch) < 0x20:
+                    escapes = {'\n': '\\n', '\r': '\\r', '\t': '\\t'}
+                    out.append(escapes.get(ch, f'\\u{ord(ch):04x}'))
+                else:
+                    out.append(ch)
+            else:
+                if ch == '"':
+                    inside = True
+                out.append(ch)
+            i += 1
+        return ''.join(out)
+
+    for encoding in ('utf-8-sig', 'utf-8', 'latin-1'):
+        try:
+            with open(path, 'r', encoding=encoding) as f:
+                raw = f.read()
+            break
+        except UnicodeDecodeError:
+            continue
+    else:
+        raise ValueError(f'Could not decode file with any known encoding: {path}')
+
+    # Pass 1: try the file as-is.
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        pass
+
+    # Pass 2: strip any HTML error page Moodle appended after the JSON.
+    stripped = _strip_html_trailer(raw)
+    if stripped != raw:
+        try:
+            return json.loads(stripped)
+        except json.JSONDecodeError:
+            pass
+
+    # Pass 3: fix bare control characters inside JSON strings, then try again.
+    for candidate in (raw, stripped):
+        try:
+            return json.loads(_sanitize(candidate))
+        except json.JSONDecodeError:
+            pass
+
+    raise ValueError(
+        f'Could not parse Moodle JSON export "{path}".\n'
+        f'Try re-exporting the file from Moodle.'
+    )
+
+
 def create_exam(exam, filename='import.xml', mode='terminal', questions=None, message=True):
     """
     Creates an xml file out of questions within the database. While using this
@@ -117,7 +203,41 @@ def remove_exam(exam, message=True):
               f'{updates.modified_count} question(s) have been updated.')
 
 
-def evaluate_exam(exam_name, stats_file, grades_file):
+def inspect_moodle_export(path) -> tuple:
+    """
+    Determine which of Moodle's two exports a JSON file is, so the GUI can sort
+    dropped files without asking the user which is which.
+
+    Returns a (kind, exam_name) pair. kind is 'stats' for an export from
+    'Statistik', 'grades' for one from 'Bewertung', or '' if the file is
+    neither. exam_name is read from a stats file and is '' otherwise, since the
+    grades export does not name the exam anywhere in its contents.
+
+    Arguments:
+    ----------
+    path (str):
+      Path of the JSON file to inspect.
+
+    ----------------
+    Dependencies: json
+    """
+
+    data = _load_moodle_json(path)
+    first = data[0][0] if isinstance(data[0], list) else data[0]
+    keys = first.keys()
+
+    # The same key names evaluate_exam() uses to detect the export's language
+    for name_key in ('quizname', 'test-name'):
+        if name_key in keys:
+            return 'stats', first[name_key]
+    for last_name_key in ('lastname', 'nachname'):
+        if last_name_key in keys:
+            return 'grades', ''
+
+    return '', ''
+
+
+def evaluate_exam(exam_name, stats_file, grades_file, mode='terminal'):
     """
     This function will evaluate the JSON files which are exported from Moodle
     within the categories 'Statistik' and 'Bewertung'. The evaluated information
@@ -132,6 +252,10 @@ def evaluate_exam(exam_name, stats_file, grades_file):
       Path of the JSON file exported from 'Statistik'.
     grades_file (str):
       Path of the JSON file exported from 'Bewertung'.
+    mode (str):
+      Changes behavior depending on if function is used in terminal or in GUI.
+      In 'gui' mode a missing exam directory is reported instead of prompting,
+      because the GUI has already asked and nothing is reading stdin.
 
     ------------------------
     Dependencies: json, numpy
@@ -139,17 +263,19 @@ def evaluate_exam(exam_name, stats_file, grades_file):
 
     # Check for correct exam name
     if exam_name not in os.listdir(f'{BASE_PATH}/databases/{DB.name}/exams/'):
-        prompt = ('Warning! Exam name was not found in directory. ' +
-                  f'Do you still wish to evaluate exam {exam_name}? (y/n)\n')
-        if yesno(prompt) == 'y':
-            pass
+        if mode == 'gui':
+            print(f'Warning: {exam_name} was not found in the exams directory.')
         else:
-            return 'Evaluation aborted.'
+            prompt = ('Warning! Exam name was not found in directory. ' +
+                      f'Do you still wish to evaluate exam {exam_name}? (y/n)\n')
+            if yesno(prompt) == 'y':
+                pass
+            else:
+                return 'Evaluation aborted.'
     assert EXAMS.find_one({'name': exam_name}), \
         f'Exam {exam_name} does not exist in database!'
 
-    with open(stats_file, 'r') as rf:
-        stats = json.load(rf)
+    stats = _load_moodle_json(stats_file)
 
     # Define languages
     english = {
@@ -180,8 +306,14 @@ def evaluate_exam(exam_name, stats_file, grades_file):
                 {'name': q[lang_profile['question_name']]}
             )
             if question:
-                moodle_name = lang_profile['index'] + q[lang_profile['index']] + \
-                    str(question['points'] * 100)
+                # Moodle uses column names like 'f1200' (no decimal). Build the
+                # column name by multiplying points by 100 and formatting as an
+                # integer to avoid trailing '.0' (which caused KeyError).
+                points_hundred = int(round(question['points'] * 100))
+                moodle_name = (
+                    lang_profile['index'] + q[lang_profile['index']] +
+                    str(points_hundred)
+                )
                 name_pairs[moodle_name] = [
                     q[lang_profile['question_name']], question['points']
                 ]
@@ -190,18 +322,23 @@ def evaluate_exam(exam_name, stats_file, grades_file):
                       'Ignoring question for evaluation.')
 
     # Read grades_file for exam and question scores
-    with open(grades_file, 'r') as rf:
-        averages = json.load(rf)[0][-1]
+    averages = _load_moodle_json(grades_file)[0][-1]
     assert averages[lang_profile['last_name']] == lang_profile['overall_average'], \
         f'Last entry in grades is not {lang_profile["overall_average"]}, ' + \
         f'but {averages[lang_profile["last_name"]]} instead!'
     # Append average question scores to name_pairs
     for q in name_pairs:
-        avg = averages[q]
-        if avg == '-':
+        # Use safe lookup to avoid KeyError when Moodle's export column name
+        # doesn't exactly match our constructed name. If missing, warn and
+        # store NaN so evaluation can continue.
+        raw = averages.get(q)
+        if raw is None:
+            print(f'Warning: no average found for column "{q}" in grades file.')
+            avg = np.nan
+        elif raw == '-':
             avg = np.nan
         else:
-            avg = float(avg.replace(',', '.'))
+            avg = float(raw.replace(',', '.'))
         name_pairs[q].append(avg)
     # Get average exam score
     exam_average = float([
@@ -220,7 +357,7 @@ def evaluate_exam(exam_name, stats_file, grades_file):
         {'name': exam_name},
         {'$set': {
             'points_avg': exam_average,
-            'question_avgs': rel_averages
+            'questions_avgs': rel_averages
          }}
     )
 
