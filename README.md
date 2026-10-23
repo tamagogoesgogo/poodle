@@ -20,8 +20,8 @@ Poodle's key features are as follows:
 * Evaluate exams using Moodle results
 * Import questions in bulk with JSON files
 
-Poodle was created and is maintained by Lukas Hötttges. It was enriched by ideas
-and suggestions from Marian Krawietz at University of Potsdam.
+Poodle was created by Lukas Höttges and is maintained by Tugay Karabörk. It was
+enriched by ideas and suggestions from Marian Krawietz at University of Potsdam.
 
 ## How to install
 
@@ -48,8 +48,7 @@ changed on your computer, the installed version starts as it is.
 
 ## Documentation
 
-A full documentation of Poodle can be found
-[here](https://ananaft.github.io/poodle-docs/).
+A full documentation of Poodle can be found [here, Placeholder]
 
 
 ## Known issues (Work in progress)
