@@ -102,8 +102,8 @@ def qt_overview() -> None:
     # with `git revert` once the message has been seen on another computer.
     from PySide6.QtCore import QTimer
     QTimer.singleShot(0, lambda: gui.dialogs.OKDialog(
-        win, 'GitHub update test',
-        'If you can read this, this Poodle has updated itself from GitHub.'
+        win, 'GitHub update test 2',
+        'If you can read this, this Poodle has updated itself from GitHub (test 2).'
     )._run())
     app.exec()
 
