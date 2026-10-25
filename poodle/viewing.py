@@ -98,6 +98,13 @@ def qt_overview() -> None:
 
     win = gui.windows.MainWindow()
     win.show()
+    # TEMPORARY test of the automatic update from GitHub: remove this commit
+    # with `git revert` once the message has been seen on another computer.
+    from PySide6.QtCore import QTimer
+    QTimer.singleShot(0, lambda: gui.dialogs.OKDialog(
+        win, 'GitHub update test',
+        'If you can read this, this Poodle has updated itself from GitHub.'
+    )._run())
     app.exec()
 
     # Leave nothing open: a surviving window would keep the next qt_overview()
